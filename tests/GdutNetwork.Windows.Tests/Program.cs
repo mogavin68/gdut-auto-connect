@@ -247,8 +247,122 @@ await Test("History cancellation prevents any HTTP requests", async () =>
     Assert(cancelled&&calls==0,"cancelled before I/O");
 });
 
+string UpdateJson(bool draft=false,bool prerelease=false,string? digest=null,string? download=null,string tag="v0.4.0")=>JsonSerializer.Serialize(new{draft,prerelease,tag_name=tag,html_url=$"https://github.com/mogavin68/gdut-auto-connect/releases/tag/{tag}",body="Synthetic release notes",assets=new[]{new{name="GdutNetwork.exe",state="uploaded",size=2048,digest=digest??("sha256:"+new string('a',64)),browser_download_url=download??$"https://github.com/mogavin68/gdut-auto-connect/releases/download/{tag}/GdutNetwork.exe"}}});
+await Test("Stable update metadata pins the repository and normalizes three-part versions",()=>Sync(()=>
+{
+    var release=GitHubUpdateClient.ParseLatest(UpdateJson());
+    Assert(release.Version==new Version(0,4,0,0)&&release.Size==2048&&release.Sha256==new string('a',64),"release metadata");
+    Assert(UpdateRelease.Normalize(new(0,4,0))==UpdateRelease.Normalize(new(0,4,0,0)),"equal current version");
+}));
+await Test("Drafts prereleases missing hashes and foreign download destinations are rejected",()=>Sync(()=>
+{
+    foreach(var json in new[]{UpdateJson(draft:true),UpdateJson(prerelease:true),UpdateJson(digest:""),UpdateJson(download:"https://evil.test/GdutNetwork.exe"),UpdateJson(tag:"v0.4.0-beta"),"<html>login</html>"})
+    {bool stopped=false;try{GitHubUpdateClient.ParseLatest(json);}catch(UpdateException){stopped=true;}Assert(stopped,"untrusted release");}
+}));
+await Test("Only verified HTTPS GitHub release CDN redirects are accepted",()=>Sync(()=>
+{
+    Assert(GitHubUpdateClient.AllowedDownloadRedirect(new("https://release-assets.githubusercontent.com/file?token=synthetic")),"official CDN");
+    foreach(var url in new[]{"http://release-assets.githubusercontent.com/file","https://release-assets.githubusercontent.com.evil.test/file","https://evil@release-assets.githubusercontent.com/file","https://release-assets.githubusercontent.com:801/file","https://github.com/login"})
+        Assert(!GitHubUpdateClient.AllowedDownloadRedirect(new(url)),"unsafe redirect");
+}));
+await Test("Update checks send no authorization or campus cookies",async()=>
+{
+    bool seen=false;using var fake=new UpdateFake(request=>
+    {
+        Assert(request.Method==HttpMethod.Get&&request.RequestUri==GitHubUpdateClient.LatestApi,"fixed API");
+        Assert(!request.Headers.Contains("Authorization")&&!request.Headers.Contains("Cookie"),"no credentials");seen=true;
+        return new(HttpStatusCode.OK){Content=new StringContent(UpdateJson())};
+    });
+    using var client=new GitHubUpdateClient(fake);await client.GetLatestAsync(default);Assert(seen,"request observed");
+});
+await Test("Unavailable and rate-limited update APIs return actionable safe errors",async()=>
+{
+    foreach(var code in new[]{HttpStatusCode.NotFound,HttpStatusCode.Forbidden,HttpStatusCode.TooManyRequests})
+    {
+        using var fake=new UpdateFake(_=>new(code));using var client=new GitHubUpdateClient(fake);bool stopped=false;
+        try{await client.GetLatestAsync(default);}catch(UpdateException){stopped=true;}Assert(stopped,"HTTP error");
+    }
+});
+await Test("A hash-mismatched update is never accepted as an executable package",async()=>
+{
+    using var fake=new UpdateFake(_=>new(HttpStatusCode.OK){Content=new ByteArrayContent(new byte[2048])});
+    using var client=new GitHubUpdateClient(fake);bool stopped=false;
+    try{await client.DownloadAsync(GitHubUpdateClient.ParseLatest(UpdateJson()),null,default);}catch(UpdateException ex){stopped=ex.Message.Contains("SHA-256");}
+    Assert(stopped,"digest mismatch");
+});
+await Test("Download size mismatch and untrusted redirect stop before installation",async()=>
+{
+    foreach(bool redirect in new[]{false,true})
+    {
+        int count=0;using var fake=new UpdateFake(_=>{count++;return redirect?new(HttpStatusCode.Redirect){Headers={Location=new Uri("https://evil.test/file")}}:new(HttpStatusCode.OK){Content=new ByteArrayContent(new byte[4096])};});
+        using var client=new GitHubUpdateClient(fake);bool stopped=false;
+        try{await client.DownloadAsync(GitHubUpdateClient.ParseLatest(UpdateJson()),null,default);}catch(UpdateException){stopped=true;}
+        Assert(stopped&&count==1,"invalid download");
+    }
+});
+await Test("Cancelling an in-progress download aborts the stream and yields no install package",async()=>
+{
+    using var fake=new UpdateFake(_=>{var content=new StreamContent(new BlockingUpdateStream());content.Headers.ContentLength=2048;return new(HttpStatusCode.OK){Content=content};});
+    using var client=new GitHubUpdateClient(fake);using var cts=new CancellationTokenSource(TimeSpan.FromMilliseconds(100));bool stopped=false;
+    try{await client.DownloadAsync(GitHubUpdateClient.ParseLatest(UpdateJson()),null,cts.Token);}catch(OperationCanceledException){stopped=true;}
+    Assert(stopped,"active download cancellation");
+});
+await Test("Cancelled update checks do not send requests",async()=>
+{
+    int calls=0;using var fake=new UpdateFake(_=>{calls++;return new(HttpStatusCode.OK){Content=new StringContent(UpdateJson())};});
+    using var client=new GitHubUpdateClient(fake);using var cts=new CancellationTokenSource();cts.Cancel();bool stopped=false;
+    try{await client.GetLatestAsync(cts.Token);}catch(OperationCanceledException){stopped=true;}Assert(stopped&&calls==0,"cancelled I/O");
+});
+string UpdateTestDirectory(){string path=Path.Combine(AppContext.BaseDirectory,"update-tests",Guid.NewGuid().ToString("N"));Directory.CreateDirectory(path);return path;}
+await Test("Verified replacement preserves the previous executable and unrelated settings",()=>Sync(()=>
+{
+    string dir=UpdateTestDirectory(),target=Path.Combine(dir,"GdutNetwork.exe"),source=Path.Combine(dir,"candidate.exe"),settings=Path.Combine(dir,"settings.json");
+    File.WriteAllText(target,"synthetic old");File.WriteAllText(source,"synthetic new");File.WriteAllText(settings,"synthetic settings");
+    string backup=UpdateInstallation.ReplaceVerified(source,target,UpdateInstallation.Sha256(target),UpdateInstallation.Sha256(source));
+    Assert(File.ReadAllText(target)=="synthetic new"&&File.ReadAllText(backup)=="synthetic old"&&File.ReadAllText(settings)=="synthetic settings","replacement preserves data");
+    UpdateInstallation.Restore(target,backup);Assert(File.ReadAllText(target)=="synthetic old","rollback");
+}));
+await Test("Changed install files and non-tool targets are rejected without modification",()=>Sync(()=>
+{
+    string dir=UpdateTestDirectory(),target=Path.Combine(dir,"GdutNetwork.exe"),source=Path.Combine(dir,"candidate.exe");File.WriteAllText(target,"old");File.WriteAllText(source,"new");
+    bool stopped=false;try{UpdateInstallation.ReplaceVerified(source,target,new string('a',64),UpdateInstallation.Sha256(source));}catch(UpdateException){stopped=true;}
+    Assert(stopped&&File.ReadAllText(target)=="old","old hash binding");
+    stopped=false;try{UpdateInstallation.ReplaceVerified(source,source,UpdateInstallation.Sha256(source),UpdateInstallation.Sha256(source));}catch(UpdateException){stopped=true;}
+    Assert(stopped&&File.ReadAllText(source)=="new","alias protected");
+}));
+await Test("Rollback can restore a previous executable when the new target is missing",()=>Sync(()=>
+{
+    string dir=UpdateTestDirectory(),target=Path.Combine(dir,"GdutNetwork.exe"),source=Path.Combine(dir,"candidate.exe");File.WriteAllText(target,"old");File.WriteAllText(source,"new");
+    string backup=UpdateInstallation.ReplaceVerified(source,target,UpdateInstallation.Sha256(target),UpdateInstallation.Sha256(source));
+    File.Delete(target);UpdateInstallation.Restore(target,backup);Assert(File.ReadAllText(target)=="old","missing target recovery");
+}));
+await Test("A locked installation cannot corrupt or remove the original executable",()=>Sync(()=>
+{
+    string dir=UpdateTestDirectory(),target=Path.Combine(dir,"GdutNetwork.exe"),source=Path.Combine(dir,"candidate.exe");File.WriteAllText(target,"old");File.WriteAllText(source,"new");
+    string oldHash=UpdateInstallation.Sha256(target),newHash=UpdateInstallation.Sha256(source);bool stopped=false;
+    using(var locked=new FileStream(target,FileMode.Open,FileAccess.Read,FileShare.None))try{UpdateInstallation.ReplaceVerified(source,target,oldHash,newHash);}catch(IOException){stopped=true;}
+    Assert(stopped&&File.ReadAllText(target)=="old"&&!Directory.EnumerateFiles(dir,"*.previous").Any(),"locked target safety");
+}));
+await Test("An arbitrary downloaded file cannot pass product/version validation",()=>Sync(()=>
+{
+    string dir=UpdateTestDirectory(),file=Path.Combine(dir,"candidate.exe");File.WriteAllText(file,"synthetic, not a PE");bool stopped=false;
+    try{UpdateInstallation.VerifyBinary(file,new(0,4,0));}catch(UpdateException){stopped=true;}Assert(stopped,"product identity");
+}));
+
 Console.WriteLine($"{results.Count - failures}/{results.Count} passed");
 return failures == 0 ? 0 : 1;
+
+sealed class BlockingUpdateStream : MemoryStream
+{
+    private bool first=true;
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer,CancellationToken token=default)
+    { if(first){first=false;buffer.Span[..512].Clear();return 512;}await Task.Delay(Timeout.Infinite,token);return 0; }
+}
+sealed class UpdateFake(Func<HttpRequestMessage,HttpResponseMessage> response) : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken token)
+    {token.ThrowIfCancellationRequested();return Task.FromResult(response(request));}
+}
 
 sealed class HistoryFake(Func<Uri,HttpResponseMessage> response) : HttpMessageHandler
 {

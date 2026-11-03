@@ -22,6 +22,8 @@ public sealed class MainForm : Form
     private readonly Button monitoring = new() { Text = "继续自动恢复", AutoSize = true, Height = 38 };
     private readonly Button accountSettings = new() { Text = "账号与设置", AutoSize = true, Height = 38 };
     private readonly Button selfService = new() { Text = "余量与缴费", AutoSize = true, Height = 38 };
+    private readonly Button update = new() { Text = "检查更新", AutoSize = true, Height = 38 };
+    private UpdateForm? updateForm;
     private readonly Label automation = new() { Dock = DockStyle.Fill, ForeColor = Color.FromArgb(88, 100, 120) };
     private readonly Button export = new() { Text = "导出诊断", AutoSize = true, Enabled = false, Height = 38 };
     private readonly DataGridView grid = new();
@@ -62,7 +64,7 @@ public sealed class MainForm : Form
         detect.BackColor = Color.FromArgb(38, 86, 189);
         detect.ForeColor = Color.White;
         detect.FlatStyle = FlatStyle.Flat;
-        foreach (var button in new[] { detect, monitoring, accountSettings, selfService, export }) { button.Padding = new Padding(12, 3, 12, 3); button.Margin = new Padding(0, 0, 12, 0); buttons.Controls.Add(button); }
+        foreach (var button in new[] { detect, monitoring, accountSettings, selfService, update, export }) { button.Padding = new Padding(12, 3, 12, 3); button.Margin = new Padding(0, 0, 12, 0); buttons.Controls.Add(button); }
         root.Controls.Add(buttons, 0, 4);
         grid.Dock = DockStyle.Fill;
         grid.ReadOnly = true;
@@ -94,12 +96,13 @@ public sealed class MainForm : Form
         root.Controls.Add(grid, 0, 5);
         root.Controls.Add(timing, 0, 6);
         root.Controls.Add(automation, 0, 7);
-        root.Controls.Add(new Label { Text = "v0.3.1 测试版 · AI 生成，不维护 · 关闭窗口收起到托盘；停止请在托盘退出", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(110, 120, 138) }, 0, 8);
+        root.Controls.Add(new Label { Text = "v0.4.0 测试版 · AI 生成，不维护 · 关闭窗口收起到托盘；停止请在托盘退出", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(110, 120, 138) }, 0, 8);
         Controls.Add(root);
         detect.Click += async (_, _) => await DetectAsync(false);
         monitoring.Click += async (_, _) => await ToggleRecoveryAsync();
         accountSettings.Click += (_, _) => OpenSettings();
         selfService.Click += (_, _) => OpenSelfService();
+        update.Click += (_, _) => OpenUpdates();
         timer.Tick += async (_, _) => { nextCheck = DateTimeOffset.Now.AddMinutes(1); RefreshTiming(); await DetectAsync(true); };
         export.Click += (_, _) => Export();
         var menu = new ContextMenuStrip();
@@ -107,6 +110,7 @@ public sealed class MainForm : Form
         menu.Items.Add("暂停 / 继续自动恢复", null, async (_, _) => await ToggleRecoveryAsync());
         menu.Items.Add("账号与设置", null, (_, _) => { Show(); OpenSettings(); });
         menu.Items.Add("余量与缴费", null, (_, _) => { Show(); OpenSelfService(); });
+        menu.Items.Add("检查更新", null, (_, _) => { Show(); OpenUpdates(); });
         menu.Items.Add("退出", null, (_, _) => { exiting = true; Close(); });
         tray.Icon = Icon;
         tray.Text = "广工自动联网小工具";
@@ -124,6 +128,7 @@ public sealed class MainForm : Form
         Shown += async (_, _) =>
         {
             if (preview) return;
+            _ = UpdateInstallation.CleanupCompletedAsync();
             if (startHidden) Hide();
             if (openAccount) OpenSettings();
             if (coordinator.Settings.Enabled) { StartTimer(); await DetectAsync(true); }
@@ -209,6 +214,7 @@ public sealed class MainForm : Form
 
     internal Form CreateSettingsPreview() => new AccountSettingsForm(vault, coordinator, preview: true);
     internal Form CreateSelfServicePreview() => new SelfServiceForm(vault, preview: true);
+    internal Form CreateUpdatePreview() => new UpdateForm(preview: true);
     internal Form CreateHistoryPreview()
     {
         var form = new SelfServiceForm(vault, preview: true);
@@ -221,6 +227,17 @@ public sealed class MainForm : Form
         if (isPreview) return;
         using var form = new SelfServiceForm(vault);
         form.ShowDialog(this);
+    }
+
+    private void OpenUpdates()
+    {
+        if (isPreview) return;
+        if (updateForm is not null) { updateForm.Activate(); return; }
+        using var form = new UpdateForm();
+        updateForm = form;
+        try { form.ShowDialog(this); }
+        finally { updateForm = null; }
+        if (form.InstallStarted) { exiting = true; Close(); }
     }
 
     private async Task WifiChangedAsync(bool manual, bool disconnected)
