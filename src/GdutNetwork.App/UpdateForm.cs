@@ -43,7 +43,7 @@ internal sealed class UpdateForm : Form
             if (preview || package is null || busy) return;
             if (MessageBox.Show(this, $"将安装 {package.Release.Tag} 并重启程序。\n\n打开的缴费会话会结束，请先完成或核对付款。账号和设置会保留。\n安装失败时会尝试恢复旧版。\n\n现在安装？", "确认安装更新", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
             try { UpdateInstallation.StartInstall(package, current, background: false); InstallStarted = true; DialogResult = DialogResult.OK; Close(); }
-            catch (Exception ex) when (ex is not OutOfMemoryException) { state.Text = ex is UpdateException ? ex.Message : $"未能启动安装（{ex.GetType().Name}），当前版本保持运行。"; }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { state.Text = ex is UpdateException ? ex.Message : $"未能启动安装（{ex.GetType().Name}），当前版本保持运行。"; install.Enabled = false; package = null; download.Enabled = true; }
         };
         Shown += async (_, _) => { if (!preview) await CheckAsync(); };
         FormClosed += (_, _) => { closed = true; lifetime.Cancel(); client.Dispose(); lifetime.Dispose(); };

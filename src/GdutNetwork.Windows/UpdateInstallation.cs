@@ -41,10 +41,20 @@ public static class UpdateInstallation
         var plan = new UpdateInstallPlan(1, Path.GetFullPath(target), package.FilePath, Sha256(target), package.Release.Sha256,
             UpdateRelease.Normalize(current).ToString(), package.Release.Version.ToString(), process.Id, process.StartTime.ToUniversalTime().Ticks, background);
         string planPath = Path.Combine(package.SessionDirectory, "install-plan.json");
+        foreach (string name in new[] { "ready.json", "cancel.json" }) { string marker = Path.Combine(package.SessionDirectory, name); EnsureNoLinks(marker); File.Delete(marker); }
         File.WriteAllText(planPath, JsonSerializer.Serialize(plan));
         var start = new ProcessStartInfo(package.FilePath) { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden, WorkingDirectory = package.SessionDirectory };
         start.ArgumentList.Add("--apply-update"); start.ArgumentList.Add(planPath);
         using var helper = Process.Start(start) ?? throw new UpdateException("无法启动更新程序，当前版本保持运行。");
+        string ready = Path.Combine(package.SessionDirectory, "ready.json");
+        var preparing = Stopwatch.StartNew();
+        while (preparing.Elapsed < TimeSpan.FromSeconds(15))
+        {
+            if (File.Exists(ready) && File.ReadAllText(ready) == helper.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)) return;
+            if (helper.WaitForExit(100)) break;
+        }
+        File.WriteAllText(Path.Combine(package.SessionDirectory, "cancel.json"), "cancelled");
+        throw new UpdateException("更新程序尚未准备完成，当前版本保持运行。请重新下载后重试。");
     }
     public static async Task ApplyAsync(string planPath)
     {
@@ -64,14 +74,21 @@ public static class UpdateInstallation
         if (newVersion <= oldVersion) throw new UpdateException("更新版本顺序无效。");
         VerifyBinary(own, newVersion);
         if (Sha256(own) != plan.NewSha256) throw new UpdateException("更新文件再次校验失败。");
+        if (File.Exists(Path.Combine(directory, "cancel.json"))) return;
+        File.WriteAllText(Path.Combine(directory, "ready.json"), Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
         try
         {
             using var parent = Process.GetProcessById(plan.ParentProcessId);
             if (!parent.HasExited)
             {
                 if (parent.StartTime.ToUniversalTime().Ticks != plan.ParentStartedUtcTicks || !string.Equals(parent.MainModule?.FileName, target, StringComparison.OrdinalIgnoreCase)) throw new UpdateException("原程序进程信息已变化，更新已取消。");
-                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
-                await parent.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+                var waiting = Stopwatch.StartNew();
+                while (!parent.HasExited)
+                {
+                    if (File.Exists(Path.Combine(directory, "cancel.json"))) return;
+                    if (waiting.Elapsed > TimeSpan.FromSeconds(45)) throw new UpdateException("原程序尚未退出，更新已取消。");
+                    await Task.Delay(100).ConfigureAwait(false);
+                }
             }
         }
         catch (ArgumentException) { /* Confirmed parent already exited; never terminate other processes. */ }
@@ -162,7 +179,7 @@ public static class UpdateInstallation
                     var done = JsonSerializer.Deserialize<UpdateCompletion>(File.ReadAllText(marker));
                     if (done is null || !done.Succeeded) continue;
                     try { using var process = Process.GetProcessById(done.HelperProcessId); if (!process.HasExited && process.StartTime.ToUniversalTime().Ticks == done.HelperStartedUtcTicks) continue; } catch (ArgumentException) { }
-                    foreach (string name in new[] { "GdutNetwork.exe", "install-plan.json", "package.part", "completed.json" })
+                    foreach (string name in new[] { "GdutNetwork.exe", "install-plan.json", "package.part", "ready.json", "cancel.json", "completed.json" })
                     { string file = Path.Combine(directory, name); EnsureNoLinks(file); File.Delete(file); }
                     if (!Directory.EnumerateFileSystemEntries(directory).Any()) Directory.Delete(directory, recursive: false);
                 }
