@@ -1,4 +1,4 @@
-Third-party notices for GdutNetwork v0.3.0
+Third-party notices for GdutNetwork
 
 AngleSharp 1.9.1
 The MIT License (MIT)

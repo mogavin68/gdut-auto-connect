@@ -169,8 +169,98 @@ await Test("Login error messages do not reproduce account or server content", ()
     Assert(!message.Contains("PRIVATE-TEST-ACCOUNT")&&message.Contains("已停止"),"private message redaction");
 }));
 
+await Test("Half-year history uses calendar months including both boundary dates", () => Sync(() =>
+{
+    var range=RechargeHistoryPeriod.LastSixMonths(new(2026,8,31));
+    Assert(range.Start==new DateOnly(2026,2,28)&&range.End==new DateOnly(2026,8,31),"calendar month clamp");
+    Assert(RechargeHistoryPeriod.LastSixMonths(new(2024,8,31)).Start==new DateOnly(2024,2,29),"leap calendar");
+}));
+await Test("Half-year slices cover every day exactly once and never exceed sixty days", () => Sync(() =>
+{
+    var range=RechargeHistoryPeriod.LastSixMonths(new(2026,11,3));var slices=range.Split();
+    var days=slices.SelectMany(s=>Enumerable.Range(s.Start.DayNumber,s.End.DayNumber-s.Start.DayNumber+1)).ToArray();
+    Assert(slices.All(s=>s.End.DayNumber-s.Start.DayNumber<60)&&days.Distinct().Count()==days.Length,"window overlap or size");
+    Assert(days.SequenceEqual(Enumerable.Range(range.Start.DayNumber,range.End.DayNumber-range.Start.DayNumber+1)),"window coverage");
+}));
+await Test("Official null-total empty history differs from malformed data", () => Sync(() =>
+{
+    Assert(RechargeHistoryClient.ParsePage("{\"total\":null,\"rows\":[]}").Total==0,"official empty");
+    foreach(var json in new[]{"<html>login</html>","{\"total\":0}","{\"total\":null,\"rows\":[[1]]}","{\"total\":-1,\"rows\":[]}"})
+    {
+        bool stopped=false;try{RechargeHistoryClient.ParsePage(json);}catch(SelfServiceException){stopped=true;}
+        Assert(stopped,"malformed history must not become zero records");
+    }
+}));
+await Test("History preserves official types notes negative amounts and China-time day boundaries", () => Sync(() =>
+{
+    long time=new DateTimeOffset(2026,5,3,0,0,0,TimeSpan.FromHours(8)).ToUnixTimeMilliseconds();
+    string json=JsonSerializer.Serialize(new{total=1,rows=new[]{new object?[]{time,"冲正",-30.25m,1,"<b>synthetic</b>"}}});
+    var row=RechargeHistoryClient.ParsePage(json).Entries[0];
+    Assert(row.OccurredAt.Day==3&&row.OccurredAt.Hour==0&&row.Amount==-30.25m&&row.Terminal=="1"&&row.Remark=="<b>synthetic</b>","raw fields");
+    Assert(!row.ToString().Contains("synthetic"),"private ToString");
+}));
+await Test("All history windows and pages load without losing identical transactions", async () =>
+{
+    var today=new DateOnly(2026,11,3);var first=RechargeHistoryPeriod.LastSixMonths(today).Split()[0];int requests=0;
+    object?[] Row(DateOnly day,string note)=>[new DateTimeOffset(day.ToDateTime(TimeOnly.MinValue),TimeSpan.FromHours(8)).ToUnixTimeMilliseconds(),"合成测试",30m,1,note];
+    using var fake=new HistoryFake(uri=>
+    {
+        requests++;var q=HistoryFake.Query(uri);int page=int.Parse(q["pageNumber"]);
+        if(q["startTime"]!=first.Start.ToString("yyyy-MM-dd"))return HistoryFake.Json(new{total=(int?)null,rows=Array.Empty<object?[]>()});
+        var rows=page==1?Enumerable.Range(0,100).Select(i=>Row(first.Start,"row "+i)).ToArray():new[]{Row(first.End,"same"),Row(first.End,"same")};
+        return HistoryFake.Json(new{total=102,rows});
+    });
+    using var client=new RechargeHistoryClient(new CookieContainer(),fake);var snapshot=await client.LoadAsync(today,default);
+    Assert(requests==5&&snapshot.Entries.Count==102,"all pages and empty windows");
+    Assert(snapshot.Entries.Count(r=>r.Remark=="same")==2&&snapshot.Entries[0].OccurredAt>=snapshot.Entries[^1].OccurredAt,"preserve real duplicates and order");
+});
+await Test("Expired history sessions stop without following redirects or submitting credentials", async () =>
+{
+    int calls=0;using var fake=new HistoryFake(_=>{calls++;return new(HttpStatusCode.Redirect){Headers={Location=new Uri("https://other.test/")}};});
+    using var client=new RechargeHistoryClient(new CookieContainer(),fake);bool stopped=false;
+    try{await client.LoadAsync(new(2026,11,3),default);}catch(SelfServiceException){stopped=true;}
+    Assert(stopped&&calls==1,"no retry or redirect");
+});
+await Test("History pagination changes cannot silently produce a partial result", async () =>
+{
+    var today=new DateOnly(2026,11,3);long stamp=new DateTimeOffset(RechargeHistoryPeriod.LastSixMonths(today).Start.ToDateTime(TimeOnly.MinValue),TimeSpan.FromHours(8)).ToUnixTimeMilliseconds();
+    using var fake=new HistoryFake(uri=>HistoryFake.Query(uri)["pageNumber"]=="1"?HistoryFake.Json(new{total=2,rows=new[]{new object?[]{stamp,"测试",30,1,"first"}}}):HistoryFake.Json(new{total=1,rows=Array.Empty<object?[]>()}));
+    using var client=new RechargeHistoryClient(new CookieContainer(),fake);bool stopped=false;
+    try{await client.LoadAsync(today,default);}catch(SelfServiceException){stopped=true;}
+    Assert(stopped,"changing total must not be claimed complete");
+});
+await Test("Out-of-range history and missing pages are rejected rather than shown as complete", async () =>
+{
+    foreach(bool outside in new[]{true,false})
+    {
+        using var fake=new HistoryFake(_=>HistoryFake.Json(new{total=1,rows=outside?new[]{new object?[]{0,"测试",30,1,"old"}}:Array.Empty<object?[]>()}));
+        using var client=new RechargeHistoryClient(new CookieContainer(),fake);bool stopped=false;
+        try{await client.LoadAsync(new(2026,11,3),default);}catch(SelfServiceException){stopped=true;}
+        Assert(stopped,"incomplete or outside");
+    }
+});
+await Test("History cancellation prevents any HTTP requests", async () =>
+{
+    int calls=0;using var fake=new HistoryFake(_=>{calls++;return HistoryFake.Json(new{total=0,rows=Array.Empty<object?[]>()});});
+    using var client=new RechargeHistoryClient(new CookieContainer(),fake);using var cts=new CancellationTokenSource();cts.Cancel();bool cancelled=false;
+    try{await client.LoadAsync(new(2026,11,3),cts.Token);}catch(OperationCanceledException){cancelled=true;}
+    Assert(cancelled&&calls==0,"cancelled before I/O");
+});
+
 Console.WriteLine($"{results.Count - failures}/{results.Count} passed");
 return failures == 0 ? 0 : 1;
+
+sealed class HistoryFake(Func<Uri,HttpResponseMessage> response) : HttpMessageHandler
+{
+    public static Dictionary<string,string> Query(Uri uri)=>uri.Query.TrimStart('?').Split('&').Select(x=>x.Split('=',2)).ToDictionary(x=>x[0],x=>x[1]);
+    public static HttpResponseMessage Json(object value)=>new(HttpStatusCode.OK){Content=new StringContent(JsonSerializer.Serialize(value),System.Text.Encoding.UTF8,"application/json")};
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if(request.Method!=HttpMethod.Get||request.RequestUri is not {} uri||uri.Scheme!="https"||uri.Host!="selfmanager.gdut.edu.cn"||uri.AbsolutePath!="/bill/getPayMent"||request.Headers.Referrer?.AbsolutePath!="/bill/payMent")throw new InvalidOperationException("Unexpected history request");
+        return Task.FromResult(response(uri));
+    }
+}
 
 sealed class PortalFake : HttpMessageHandler
 {

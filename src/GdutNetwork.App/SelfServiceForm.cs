@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Net;
 using GdutNetwork.Windows;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
@@ -13,6 +14,9 @@ internal sealed class SelfServiceForm : Form
     private readonly WebView2 balanceBrowser = new() { Visible = false, Size = new(1,1) };
     private readonly List<WebView2> paymentViews = [];
     private readonly TabControl tabs = new() { Dock = DockStyle.Fill };
+    private readonly TabPage historyTab = new("充值记录（近半年）");
+    private readonly RechargeHistoryPanel historyPanel;
+    private bool historyBusy, historyAttempted, selfServiceReady;
     private readonly Label paid = new() { Dock = DockStyle.Fill, Text = "待查询", Font = new("Microsoft YaHei UI", 25, FontStyle.Bold) };
     private readonly Label gift = new() { Dock = DockStyle.Fill, Text = "待查询", Font = new("Microsoft YaHei UI", 25, FontStyle.Bold) };
     private readonly Label status = new() { Dock = DockStyle.Fill, Text = "正在准备官网连接…" };
@@ -40,6 +44,7 @@ internal sealed class SelfServiceForm : Form
     {
         this.preview = preview;
         this.vault = vault;
+        historyPanel = new(preview);
         Text = "套餐余量与自助缴费"; Icon = BrandAssets.LoadIcon();
         Font = new("Microsoft YaHei UI", 10); ClientSize = new(1040, 760); MinimumSize = new(940, 700);
         StartPosition = FormStartPosition.CenterParent; BackColor = Color.FromArgb(245, 247, 251);
@@ -65,7 +70,16 @@ internal sealed class SelfServiceForm : Form
         layout.Controls.Add(order,0,3); layout.Controls.Add(qr,0,4);
         layout.Controls.Add(new Label { Text = "付款由你使用微信扫码完成。支付结果以官方查询为准；已扣款请勿重复缴费。", Dock = DockStyle.Fill, ForeColor = Color.DimGray },0,5);
         native.Controls.Add(layout); official.Controls.Add(browser); official.Controls.Add(address);
-        tabs.TabPages.AddRange([native,official]); shell.Controls.Add(tabs,0,2); Controls.Add(shell); Controls.Add(balanceBrowser);
+        historyTab.Controls.Add(historyPanel);
+        tabs.TabPages.AddRange([native,official,historyTab]); shell.Controls.Add(tabs,0,2); Controls.Add(shell); Controls.Add(balanceBrowser);
+        historyPanel.RefreshRequested += LoadHistoryAsync;
+        historyPanel.OpenOfficialRequested += () =>
+        {
+            if (browser.CoreWebView2 is null) return;
+            tabs.SelectedIndex = 1;
+            browser.CoreWebView2.Navigate("https://selfmanager.gdut.edu.cn/bill/payMent");
+        };
+        tabs.SelectedIndexChanged += async (_, _) => { if (tabs.SelectedTab == historyTab && selfServiceReady && !historyAttempted) await LoadHistoryAsync(); };
         officialButton.Click += (_,_) =>
         {
             var payment=paymentViews.LastOrDefault(v=>!v.IsDisposed)?.FindForm();
@@ -179,11 +193,14 @@ internal sealed class SelfServiceForm : Form
                     status.Text="正在通过官网前端登录…";return;
                 }
                 loginNotice=null;
+                selfServiceReady=true;
+                if(!historyBusy)historyPanel.SetReady(true);
                 ShowBalance(SelfServiceParser.Balance(html));
                 if(view==browser&&new Uri(view.CoreWebView2.Source).AbsolutePath=="/dashboard")
                     browser.CoreWebView2.Navigate("https://selfmanager.gdut.edu.cn/service/selfRechargeAction");
             }
             if(view!=balanceBrowser)await ReadBrowserAsync(view);
+            if(tabs.SelectedTab==historyTab&&selfServiceReady&&!historyAttempted)await LoadHistoryAsync();
         }
         catch(SelfServiceException ex){if(!closed){loginNotice=ex.Message;status.Text=ex.Message;tabs.SelectedIndex=1;}}
         catch(Exception ex) when(ex is not OutOfMemoryException){if(!closed)status.Text=$"官网读取未完成（{ex.GetType().Name}），请使用官方页面。";}
@@ -203,6 +220,32 @@ internal sealed class SelfServiceForm : Form
             balanceBrowser.CoreWebView2!.Navigate("https://selfmanager.gdut.edu.cn/dashboard");
         }
         catch(Exception ex) when(ex is not OutOfMemoryException){if(!closed)status.Text=$"余量刷新未完成（{ex.GetType().Name}），请在官方页面核对。";}
+    }
+
+    internal void ShowHistoryPreview() => tabs.SelectedTab = historyTab;
+
+    private async Task LoadHistoryAsync()
+    {
+        if(preview||closed||historyBusy||!selfServiceReady||browser.CoreWebView2 is null)return;
+        historyBusy=true;historyAttempted=true;
+        var today=RechargeHistoryPeriod.ChinaToday;
+        historyPanel.Loading(RechargeHistoryPeriod.LastSixMonths(today));
+        using var cancellation=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        cancellation.CancelAfter(TimeSpan.FromSeconds(90));
+        try
+        {
+            // Transfer only this app's current official-site session, never cookies from an external browser.
+            var cookies=new CookieContainer();
+            foreach(var cookie in await browser.CoreWebView2.CookieManager.GetCookiesAsync("https://selfmanager.gdut.edu.cn/"))
+                cookies.Add(new Cookie(cookie.Name,cookie.Value,cookie.Path,"selfmanager.gdut.edu.cn"){Secure=true,HttpOnly=cookie.IsHttpOnly});
+            using var client=new RechargeHistoryClient(cookies);
+            var snapshot=await client.LoadAsync(today,cancellation.Token);
+            if(!closed)historyPanel.ShowSnapshot(snapshot);
+        }
+        catch(SelfServiceException ex){if(!closed)historyPanel.ShowError(ex.Message);}
+        catch(OperationCanceledException){if(!closed)historyPanel.ShowError("查询已取消或超时，未取得完整充值记录，请刷新重试。");}
+        catch(Exception ex) when(ex is not OutOfMemoryException){if(!closed)historyPanel.ShowError($"充值记录查询未完成（{ex.GetType().Name}），请重试或在官网核对。");}
+        finally{historyBusy=false;}
     }
     private void ShowBalance(SubscriptionBalance value)
     {

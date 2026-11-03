@@ -94,7 +94,7 @@ public sealed class MainForm : Form
         root.Controls.Add(grid, 0, 5);
         root.Controls.Add(timing, 0, 6);
         root.Controls.Add(automation, 0, 7);
-        root.Controls.Add(new Label { Text = "v0.3.0 测试版 · AI 生成，不维护 · 关闭窗口收起到托盘；停止请在托盘退出", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(110, 120, 138) }, 0, 8);
+        root.Controls.Add(new Label { Text = "v0.3.1 测试版 · AI 生成，不维护 · 关闭窗口收起到托盘；停止请在托盘退出", Dock = DockStyle.Fill, ForeColor = Color.FromArgb(110, 120, 138) }, 0, 8);
         Controls.Add(root);
         detect.Click += async (_, _) => await DetectAsync(false);
         monitoring.Click += async (_, _) => await ToggleRecoveryAsync();
@@ -209,6 +209,12 @@ public sealed class MainForm : Form
 
     internal Form CreateSettingsPreview() => new AccountSettingsForm(vault, coordinator, preview: true);
     internal Form CreateSelfServicePreview() => new SelfServiceForm(vault, preview: true);
+    internal Form CreateHistoryPreview()
+    {
+        var form = new SelfServiceForm(vault, preview: true);
+        form.ShowHistoryPreview();
+        return form;
+    }
 
     private void OpenSelfService()
     {
