@@ -13,9 +13,10 @@
 - 当前用户 Windows 凭据管理器：`GDUTAutoNetwork/UniversityTown/v1`。
 - 非敏感设置：`%LOCALAPPDATA%/GDUTAutoNetwork/settings.json`。
 - 登录后启动选项保存时，仅设置当前用户的 `GDUTAutoNetwork` 启动项。
+- 自助服务使用本工具独立的 WebView2 InPrivate 会话，不读取外部浏览器 Cookie 或密码；订单、二维码和支付链接只在当前窗口会话使用，不写入备份。WebView2 运行文件放在当前用户 LocalAppData，关闭缴费窗口会结束它的会话。
 
 移除前可在设置中取消登录后启动并保存、删除已保存凭据，然后从托盘退出。
 
 ## 项目状态
 
-AI 生成，不会对本项目进行维护。备份中不包含实网端到端验收已通过的承诺。
+AI 生成，不会对本项目进行维护。自助服务的自动登录、余量、订单与付款码读取已实测，未实际付款；网络断线恢复仍未完成实网端到端验收。

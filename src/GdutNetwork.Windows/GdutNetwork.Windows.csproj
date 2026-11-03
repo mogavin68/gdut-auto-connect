@@ -5,5 +5,5 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
-  <ItemGroup><ProjectReference Include="../GdutNetwork.Core/GdutNetwork.Core.csproj" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="../GdutNetwork.Core/GdutNetwork.Core.csproj" /><PackageReference Include="AngleSharp" Version="1.9.1" /></ItemGroup>
 </Project>

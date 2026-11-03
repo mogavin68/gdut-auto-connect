@@ -109,6 +109,66 @@ await Test("Cancellation during a request propagates to the coordinator", async 
 });
 
 if (args.Length == 1) File.WriteAllText(Path.GetFullPath(args[0]), JsonSerializer.Serialize(new { Total = results.Count, Failed = failures, Results = results }, new JsonSerializerOptions { WriteIndented = true }));
+await Test("Official account months and unused gift months are independent", () => Sync(() =>
+{
+    var value=SelfServiceParser.Balance("<p><label>账号剩余月数：</label><span>5</span></p><p><label>还没使用赠送月数：</label><span>2</span></p>");
+    Assert(value.AccountMonths==5&&value.GiftMonths==2,"independent official balances");
+}));
+await Test("Zero months is distinct from an unavailable official field", () => Sync(() =>
+{
+    var value=SelfServiceParser.Balance("<p><label>账号剩余月数:</label><span>0</span></p>");
+    Assert(value.AccountMonths==0&&value.GiftMonths is null,"zero vs unknown");
+}));
+await Test("Money and gift promotions are never converted into remaining months", () => Sync(() =>
+{
+    var value=SelfServiceParser.Balance("<p><label>账户余额</label><span>300</span></p><div>充值5个月送1个月</div><script>var leftMonths='10';</script>");
+    Assert(value.AccountMonths is null&&value.GiftMonths is null,"no inferred balance");
+}));
+await Test("Conflicting desktop and mobile balances remain unknown", () => Sync(() =>
+{
+    var value=SelfServiceParser.Balance("<p><label>账号剩余月数:</label><span>3</span></p><p><label>账号剩余月数:</label><span>4</span></p>");
+    Assert(value.AccountMonths is null,"conflict");
+}));
+await Test("Identical responsive copies do not double-count months", () => Sync(() =>
+{
+    var value=SelfServiceParser.Balance(string.Concat(Enumerable.Repeat("<p><label>账号剩余月数:</label><span>5</span></p>",2)));
+    Assert(value.AccountMonths==5,"duplicate not sum");
+}));
+await Test("Unexpected or overflowing month values remain unknown", () => Sync(() =>
+{
+    foreach(var text in new[]{"9999999999999999999999999999999999999999","-1","5元","NaN"})
+        Assert(SelfServiceParser.Balance($"<p><label>账号剩余月数:</label><span>{text}</span></p>").AccountMonths is null,"invalid number");
+}));
+await Test("Only exact HTTPS service and verified payment hosts are navigable", () => Sync(() =>
+{
+    Assert(SelfServiceNavigation.IsSelfService("https://selfmanager.gdut.edu.cn/dashboard"),"official self service");
+    Assert(SelfServiceNavigation.IsOfficial("https://tyzf.gdut.edu.cn/zhifu/PayMain.aspx"),"verified payment host");
+    foreach(var url in new[]{"http://selfmanager.gdut.edu.cn/","https://selfmanager.gdut.edu.cn.evil.test/","https://selfmanager.gdut.edu.cn@evil.test/","https://evil@selfmanager.gdut.edu.cn/","https://selfmanager.gdut.edu.cn:801/","https://other.gdut.edu.cn/","file:///C:/test"})
+        Assert(!SelfServiceNavigation.IsOfficial(url),"unsafe navigation");
+    Assert(!SelfServiceNavigation.IsSelfService("https://tyzf.gdut.edu.cn/"),"payment host must never receive credentials");
+}));
+const string loginFixture="""
+<form id="loginform" method="post" action="/login/verify"><input id="account" name="account"><input type="password" id="password" name="password"><div id="randomDiv" style="display: none"></div></form>
+<script>var codeflag = 'false';var trytimes='0';</script>
+""";
+await Test("Verified official form can use the real frontend without emulating password encryption", () => Sync(() =>
+{
+    SelfServiceParser.ValidateLoginForm(loginFixture,new Uri("https://selfmanager.gdut.edu.cn/login/"));
+}));
+await Test("Captcha and changed credential destinations stop automatic self-service login", () => Sync(() =>
+{
+    foreach(var changed in new[]{loginFixture.Replace("'false'","'true'"),loginFixture.Replace("trytimes='0'","trytimes='3'"),loginFixture.Replace("display: none","display: block"),loginFixture.Replace("action=\"/login/verify\"","action=\"https://tyzf.gdut.edu.cn/login/verify\""),loginFixture.Replace("method=\"post\"","method=\"get\"")})
+    {
+        bool stopped=false;try{SelfServiceParser.ValidateLoginForm(changed,new Uri("https://selfmanager.gdut.edu.cn/login/"));}catch(SelfServiceException){stopped=true;}
+        Assert(stopped,"unsafe or interactive login must stop");
+    }
+}));
+await Test("Login error messages do not reproduce account or server content", () => Sync(() =>
+{
+    string message=SelfServiceParser.LoginError("<form id=loginform></form><div id=error>账号 PRIVATE-TEST-ACCOUNT 密码错误</div>");
+    Assert(!message.Contains("PRIVATE-TEST-ACCOUNT")&&message.Contains("已停止"),"private message redaction");
+}));
+
 Console.WriteLine($"{results.Count - failures}/{results.Count} passed");
 return failures == 0 ? 0 : 1;
 

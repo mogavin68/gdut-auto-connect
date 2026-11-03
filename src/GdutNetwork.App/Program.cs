@@ -25,10 +25,10 @@ internal static class Program
                 return 1;
             }
         }
-        if ((args.Length == 2 && args[0] is "--render-preview" or "--render-settings") || (args.Length == 3 && args[0] == "--render-report"))
+        if ((args.Length == 2 && args[0] is "--render-preview" or "--render-settings" or "--render-selfservice") || (args.Length == 3 && args[0] == "--render-report"))
         {
             using var main = new MainForm(preview: true);
-            using Form preview = args[0] == "--render-settings" ? main.CreateSettingsPreview() : main;
+            using Form preview = args[0] == "--render-settings" ? main.CreateSettingsPreview() : args[0] == "--render-selfservice" ? main.CreateSelfServicePreview() : main;
             preview.ShowInTaskbar = false; preview.StartPosition = FormStartPosition.Manual; preview.Location = new(-32000, -32000);
             if (args[0] == "--render-report")
             {

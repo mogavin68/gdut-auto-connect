@@ -7,12 +7,18 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AssemblyName>GdutNetwork</AssemblyName>
-    <Version>0.2.1</Version>
+    <Version>0.3.0</Version>
     <ApplicationIcon>../../assets/app.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
     <ProjectReference Include="../GdutNetwork.Windows/GdutNetwork.Windows.csproj" />
     <EmbeddedResource Include="../../assets/app.ico" LogicalName="GdutNetwork.BrandIcon" />
+    <EmbeddedResource Include="../../THIRD-PARTY-NOTICES.txt" LogicalName="GdutNetwork.ThirdPartyNotices" />
+    <Content Include="../../THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
+  <Target Name="RemoveUnusedWebViewWpfReference" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup><Reference Remove="@(Reference)" Condition="'%(Reference.Filename)' == 'Microsoft.Web.WebView2.Wpf'" /></ItemGroup>
+  </Target>
 </Project>

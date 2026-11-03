@@ -14,5 +14,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Windows test restore failed.' }
     & $launcher run --project $windowsTests --configuration Release --no-restore -- (Join-Path $projectRoot 'work\diagnostics\windows-test-results.json')
     if ($LASTEXITCODE -ne 0) { throw 'Windows integration tests failed.' }
+    $appTests = Join-Path $projectRoot 'tests\GdutNetwork.App.Tests\GdutNetwork.App.Tests.csproj'
+    & $launcher restore $appTests --configfile (Join-Path $projectRoot 'NuGet.Offline.Config') --verbosity minimal
+    if ($LASTEXITCODE -ne 0) { throw 'App test restore failed.' }
+    & $launcher run --project $appTests --configuration Release --no-restore
+    if ($LASTEXITCODE -ne 0) { throw 'App integration tests failed.' }
 }
 finally { Pop-Location }

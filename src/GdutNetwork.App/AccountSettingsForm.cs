@@ -23,7 +23,7 @@ internal sealed class AccountSettingsForm : Form
         show.CheckedChanged += (_, _) => password.UseSystemPasswordChar = !show.Checked;
         var billing = new CheckBox { Text = "自动确认新计费周期（可能触发新周期计费）", AutoSize = true, Checked = coordinator.Settings.AutoConfirmBillingCycle };
         var http = new CheckBox { Text = "HTTPS 不可用时，允许按官方 HTTP 方式登录", AutoSize = true, Checked = coordinator.Settings.AllowHttpAuthentication };
-        var startup = new CheckBox { Text = "登录 Windows 后后台运行", AutoSize = true, Checked = coordinator.Settings.StartWithWindows };
+        var startup = new CheckBox { Text = "开机自启动（登录 Windows 后在托盘后台运行）", AutoSize = true, Checked = preview ? coordinator.Settings.StartWithWindows : StartupRegistration.IsEnabled() };
         root.Controls.Add(new Label { Text = "账号", AutoSize = true }, 0, 0); root.Controls.Add(user, 1, 0);
         root.Controls.Add(new Label { Text = "密码", AutoSize = true }, 0, 1); root.Controls.Add(password, 1, 1);
         root.Controls.Add(show, 1, 2);
@@ -48,8 +48,8 @@ internal sealed class AccountSettingsForm : Form
                 string userName = user.Text.Trim();
                 if (password.Text.Length > 0) vault.Save(userName, password.Text);
                 else if (userName != (vault.ReadMetadata() ?? "")) { MessageBox.Show(this, "修改账号时请同时填写密码。", "尚未保存"); return; }
-                coordinator.UpdateOptions(http.Checked, billing.Checked, startup.Checked);
                 StartupRegistration.SetEnabled(startup.Checked);
+                coordinator.UpdateOptions(http.Checked, billing.Checked, startup.Checked);
                 password.Clear();
                 DialogResult = DialogResult.OK; Close();
             }
